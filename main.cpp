@@ -74,7 +74,7 @@ void setup(){
 void loop(){
 
   n = 0;
-  LAeq = 0;
+  AwtAccum = 0;
   starttime = millis();  // Get initial time
 
   // Loop and accumulate values during sampling interval
