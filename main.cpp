@@ -59,7 +59,7 @@ float Awt = 0;
 float AwtAccum = 0;
 float LAeq = 0;
 uint8_t n = 0; // number of measurements to average
-unsigned long sampletime = 1000;  // Sampling interval
+unsigned long sampletime = 500;  // Sampling interval
 unsigned long starttime;
 
 void setup(){
@@ -90,6 +90,8 @@ void setup(){
   filter2000.resonance(1.414);
   filter4000.frequency(4000);
   filter4000.resonance(1.414);
+  filter8000.frequency(8000);
+  filter8000.resonance(1.414);
 }
 
 void loop(){
