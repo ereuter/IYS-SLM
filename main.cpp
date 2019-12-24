@@ -18,18 +18,22 @@ const uint8_t kPanelType = SMARTMATRIX_HUB75_16ROW_MOD8SCAN; // use SMARTMATRIX_
 const uint8_t kMatrixOptions = (SMARTMATRIX_OPTIONS_NONE);      // see http://docs.pixelmatix.com/SmartMatrix for options
 const uint8_t kIndexedLayerOptions = (SM_INDEXED_OPTIONS_NONE);
 const uint8_t kBackgroundLayerOptions = (SM_BACKGROUND_OPTIONS_NONE);
+const uint8_t kScrollingLayerOptions = (SM_SCROLLING_OPTIONS_NONE);
 
 SMARTMATRIX_ALLOCATE_BUFFERS(matrix, kMatrixWidth, kMatrixHeight, kRefreshDepth, kDmaBufferRows, kPanelType, kMatrixOptions);
 SMARTMATRIX_ALLOCATE_INDEXED_LAYER(indexedLayer, kMatrixWidth, kMatrixHeight, COLOR_DEPTH, kIndexedLayerOptions);
 SMARTMATRIX_ALLOCATE_BACKGROUND_LAYER(backgroundLayer, kMatrixWidth, kMatrixHeight, COLOR_DEPTH, kBackgroundLayerOptions);
+SMARTMATRIX_ALLOCATE_SCROLLING_LAYER(scrollingLayer, kMatrixWidth, kMatrixHeight, COLOR_DEPTH, kScrollingLayerOptions);
 
 const int defaultBrightness = 128;
-const int backgroundBrightness = 20;
+const int backgroundBrightness = defaultBrightness/10;
 
 const rgb24 backgroundColor = {0x33,0x00,0x55};
 const rgb24 barColor = {0x33, 0x99, 0xff};
 const rgb24 barOutlineColor = {0x33, 0x99, 0xff};
-const rgb24 numberColor = {0xFF,0xFF,0x66};
+const rgb24 numberGreen = {0x66, 0xFF, 0x66};
+const rgb24 numberYellow = {0xFF,0xFF,0x66};
+const rgb24 numberRed = {0xff, 0 ,0};
 
 
 // GUItool: begin automatically generated code
@@ -76,16 +80,30 @@ AudioConnection          patchCord19(filter4000, 1, rms4000, 0);
 AudioConnection          patchCord20(filter8000, 1, rms8000, 0);
 // GUItool: end automatically generated code
 
-uint8_t prescale = 20;  // Prescaler for RMS detector output
-float offset = 91;    // Microphone calibration
-float scaledRMS[9] = {0};
-float Awt[9] = {0};
+const uint8_t prescale = 20;  // Prescaler for RMS detector output
+const float offset = 91;    // Microphone calibration
+const uint8_t yellow = 85;
+const uint8_t red = 93;
+
 float AwtAccum = 0;
-float LAeq = 0;
-uint8_t n = 0; // number of measurements to average
-unsigned long sampletime = 1000;  // Sampling interval
-unsigned long starttime;
-char str[5]; // Sound level to print to display
+float AwtTrace = 0;
+float ZwtAccum[9] = {0};
+uint8_t trace[32] = {0};
+uint8_t reportAvg = 0; // number of measurements to average
+uint8_t graphAvg = 0;
+bool report = false;  // gets set when measurement interval ends
+bool graph = false;
+
+IntervalTimer reportTimer;
+IntervalTimer graphTimer;
+
+void setReport(){
+  report = true;
+}
+
+void setGraph(){
+  graph = true;
+}
 
 void setup(){
 
@@ -93,8 +111,8 @@ void setup(){
   Serial.begin(115200);
 
   matrix.addLayer(&backgroundLayer);
+  matrix.addLayer(&scrollingLayer);
   matrix.addLayer(&indexedLayer);
-
   matrix.begin();
 
   pinMode(18, INPUT);
@@ -104,6 +122,9 @@ void setup(){
 
   matrix.setBrightness(defaultBrightness);
   backgroundLayer.setBrightness(backgroundBrightness);
+
+  reportTimer.begin(setReport,1000000);
+  graphTimer.begin(setGraph, 100000);
 
 // Pink noise generator for debug
   pink1.amplitude(0.01);
@@ -130,95 +151,129 @@ void setup(){
   filter4000.resonance(1.414);
   filter8000.frequency(8000);
   filter8000.resonance(1.414);
+
+
+  scrollingLayer.setColor({0xff, 0xff, 0xff});
+  scrollingLayer.setMode(wrapForward);
+  scrollingLayer.setSpeed(30);
+  scrollingLayer.setFont(font6x10);
+  scrollingLayer.start("International Year of Sound", 1);
 }
 
-
 void loop(){
-  n = 0;
-  AwtAccum = 0;
-  starttime = millis();  // Get initial time
 
-  // Loop and accumulate values during sampling interval
-  while((millis() - starttime) < sampletime){
 
-    // Wait untl data avaiable from all octave-band filters
-    if (
-            rms31.available() &&
-            rms63.available() &&
-            rms125.available() &&
-            rms250.available() &&
-            rms500.available() &&
-            rms1000.available() &&
-            rms2000.available() &&
-            rms4000.available() &&
-            rms8000.available()
-        ){
+    // Wait until data avaiable from all octave-band filters
+  if (
+          rms31.available() &&
+          rms63.available() &&
+          rms125.available() &&
+          rms250.available() &&
+          rms500.available() &&
+          rms1000.available() &&
+          rms2000.available() &&
+          rms4000.available() &&
+          rms8000.available()
+      ){
 
+    float scaledRMS[9] = {0};
+    float Awt[9] = {0};
 //  Read and scale RMS values
-        scaledRMS[0] = rms31.read()   * prescale;
-        scaledRMS[1] = rms63.read()   * prescale;
-        scaledRMS[2] = rms125.read()  * prescale;
-        scaledRMS[3] = rms250.read()  * prescale;
-        scaledRMS[4] = rms500.read()  * prescale;
-        scaledRMS[5] = rms1000.read() * prescale;
-        scaledRMS[6] = rms2000.read() * prescale;
-        scaledRMS[7] = rms4000.read() * prescale;
-        scaledRMS[8] = rms8000.read() * prescale;
-
+    scaledRMS[0] = rms31.read()   * prescale;
+    scaledRMS[1] = rms63.read()   * prescale;
+    scaledRMS[2] = rms125.read()  * prescale;
+    scaledRMS[3] = rms250.read()  * prescale;
+    scaledRMS[4] = rms500.read()  * prescale;
+    scaledRMS[5] = rms1000.read() * prescale;
+    scaledRMS[6] = rms2000.read() * prescale;
+    scaledRMS[7] = rms4000.read() * prescale;
+    scaledRMS[8] = rms8000.read() * prescale;
 
 // Apply A-weighting and square values from each band
-        Awt[0] = scaledRMS[0] * 0.01071519;  //squared Vrms
-        Awt[1] = scaledRMS[1] * 0.04897788;
-        Awt[2] = scaledRMS[2] * 0.15667510;
-        Awt[3] = scaledRMS[3] * 0.37153523;
-        Awt[4] = scaledRMS[4] * 0.69183097;
-        Awt[5] = scaledRMS[5]             ;
-        Awt[6] = scaledRMS[6] * 1.1481536 ;
-        Awt[7] = scaledRMS[7] * 1.1220185 ;
-        Awt[8] = scaledRMS[8] * 0.8810489 ;
+    Awt[0] = scaledRMS[0] * 0.01071519;  //squared Vrms
+    Awt[1] = scaledRMS[1] * 0.04897788;
+    Awt[2] = scaledRMS[2] * 0.15667510;
+    Awt[3] = scaledRMS[3] * 0.37153523;
+    Awt[4] = scaledRMS[4] * 0.69183097;
+    Awt[5] = scaledRMS[5]             ;
+    Awt[6] = scaledRMS[6] * 1.1481536 ;
+    Awt[7] = scaledRMS[7] * 1.1220185 ;
+    Awt[8] = scaledRMS[8] * 0.8810489 ;
 
 // Accumulate sums of sqaured voltages from each loop
-        for (int i = 0; i < 9; i++){
-          AwtAccum += sq(Awt[i]);
-        }
-        n++;  // Increment average counter for later averaging
+    for (int i = 0; i < 9; i++){
+      AwtAccum += sq(Awt[i]);
+      AwtTrace += sq(Awt[i]);
+    }
+    reportAvg++;  // Increment loop counter for later averaging
 
-        int bar[9] = {0}; // Octave-band bargraph heights
+    for (int i = 0; i < 9; i++){
+      ZwtAccum[i] += sq(scaledRMS[i]);
+    }
+    graphAvg++;
+    delay(10);
+  }
 
-// Calculated SPL in each band and scale for display
-        for (int i = 0; i < 9; i++){
-          bar[i] = int((20 * log10f(scaledRMS[i]) + offset - 15)/5);
-        }
 
-        backgroundLayer.fillScreen(backgroundColor); // Set background
+// Graphing interval timer sets "graph"
+if(graph){
 
-// Draw rectangles for each band
-        for (int b = 0; b < 8; b++){
-          const int barSpacing = 4;
-          const int barWidth = 3;
-          int x0 = b * barSpacing;
-          int y0 = kMatrixHeight;
-          int x1 = b * barSpacing + barWidth - 1;
-          int y1 = kMatrixHeight - bar[b];
-          backgroundLayer.fillRectangle(x0, y0, x1, y1, barOutlineColor, barColor);
-        }
-        backgroundLayer.swapBuffers();
-      }
+// Draw graphic level record
+    backgroundLayer.fillScreen(backgroundColor); // Set background
+    for (int i = 0; i < 32; i++){
+      trace[i] = trace[i+1];
+    }
+    trace[31] = int((10 * log10f(AwtTrace / graphAvg) + offset)/5)-2;
+    for (int i = 0; i < 32; i++){
+      backgroundLayer.drawPixel(i, kMatrixHeight - trace[i], {0xFF, 0xCC, 0xFF});
     }
 
+// Calculate SPL in each band and scale for bargraph display
+    int bar[9] = {0}; // Octave-band bargraph heights
+    for (int i = 0; i < 9; i++){
+      bar[i] = int((10 * log10f(ZwtAccum[i]/graphAvg) + offset - 15)/5);
+    }
+// Draw rectangles for each band
+
+    for (int b = 0; b < 8; b++){
+      const int barSpacing = 4;
+      const int barWidth = 3;
+      int x0 = b * barSpacing;
+      int y0 = kMatrixHeight;
+      int x1 = b * barSpacing + barWidth - 1;
+      int y1 = kMatrixHeight - bar[b];
+      backgroundLayer.fillRectangle(x0, y0, x1, y1, barOutlineColor, barColor);
+    }
+    backgroundLayer.swapBuffers();
+    graphAvg = 0;
+    for (int i = 0; i < 9; i++){
+      ZwtAccum[i] = 0;
+    }
+    AwtTrace = 0;
+    graph = false;
+  }
+
+
+// Sampling interval timer sets "report"
+  if(report){
 // Power is proportional to V^2.  AwtAccum is a sum of V^2 values.
 // Average power is sigma(P)/n, equivalent to sigma(V^2)/n.
 // 10Log(sigma(V^2)/n) = average SPL
 // offset = mic calibration
+    float LAeq = (round(10 * log10f(AwtAccum / reportAvg) + offset));
+    Serial.println(LAeq,0);  // Report 0 decimal places
 
-    LAeq = round(10 * log10f(AwtAccum / n) + offset);
-    //Serial.println(LAeq,0);  // Report 0 decimal places
-
+    char str[5];
     sprintf(str, "%d", int(LAeq));
 
     indexedLayer.fillScreen(0);
-    indexedLayer.setIndexedColor(0, numberColor);
     indexedLayer.setFont(font8x13);
+
+    rgb24 numberColor = numberGreen;
+    if (LAeq >= yellow) {numberColor = numberYellow;}
+    if (LAeq >= red) {numberColor = numberRed;}
+    indexedLayer.setIndexedColor(0, numberColor);
+
     if (LAeq < 100) {
       indexedLayer.drawString(12, 1, 0, str);
     } else {
@@ -226,5 +281,9 @@ void loop(){
     }
 
     indexedLayer.swapBuffers();
-    //Serial.println(AudioProcessorUsage());
+    //Serial.println(reportAvg);
+    reportAvg = 0;
+    AwtAccum = 0;
+    report = false;
+  }
 }
