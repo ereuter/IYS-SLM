@@ -5,6 +5,32 @@
 #include <SPI.h>
 #include <SD.h>
 #include <SerialFlash.h>
+#include <SmartLEDShieldV4.h>
+
+
+// Setup display
+#define COLOR_DEPTH 24                  // known working: 24, 48 - If the sketch uses type `rgb24` directly, COLOR_DEPTH must be 24
+const uint8_t kMatrixWidth = 32;        // known working: 32, 64, 96, 128
+const uint8_t kMatrixHeight = 16;       // known working: 16, 32, 48, 64
+const uint8_t kRefreshDepth = 36;       // known working: 24, 36, 48
+const uint8_t kDmaBufferRows = 2;       // known working: 2-4, use 2 to save memory, more to keep from dropping frames and automatically lowering refresh rate
+const uint8_t kPanelType = SMARTMATRIX_HUB75_16ROW_MOD8SCAN; // use SMARTMATRIX_HUB75_16ROW_MOD8SCAN for common 16x32 panels, or use SMARTMATRIX_HUB75_64ROW_MOD32SCAN for common 64x64 panels
+const uint8_t kMatrixOptions = (SMARTMATRIX_OPTIONS_NONE);      // see http://docs.pixelmatix.com/SmartMatrix for options
+const uint8_t kIndexedLayerOptions = (SM_INDEXED_OPTIONS_NONE);
+const uint8_t kBackgroundLayerOptions = (SM_BACKGROUND_OPTIONS_NONE);
+
+SMARTMATRIX_ALLOCATE_BUFFERS(matrix, kMatrixWidth, kMatrixHeight, kRefreshDepth, kDmaBufferRows, kPanelType, kMatrixOptions);
+SMARTMATRIX_ALLOCATE_INDEXED_LAYER(indexedLayer, kMatrixWidth, kMatrixHeight, COLOR_DEPTH, kIndexedLayerOptions);
+SMARTMATRIX_ALLOCATE_BACKGROUND_LAYER(backgroundLayer, kMatrixWidth, kMatrixHeight, COLOR_DEPTH, kBackgroundLayerOptions);
+
+const int defaultBrightness = 128;
+const int backgroundBrightness = 20;
+
+const rgb24 backgroundColor = {0x33,0x00,0x55};
+const rgb24 barColor = {0x33, 0x99, 0xff};
+const rgb24 barOutlineColor = {0x33, 0x99, 0xff};
+const rgb24 numberColor = {0xFF,0xFF,0x66};
+
 
 // GUItool: begin automatically generated code
 AudioSynthNoisePink      pink1;          //xy=117,268
@@ -50,27 +76,39 @@ AudioConnection          patchCord19(filter4000, 1, rms4000, 0);
 AudioConnection          patchCord20(filter8000, 1, rms8000, 0);
 // GUItool: end automatically generated code
 
-
-
-
-uint8_t prescale = 20;  // Prescaler for RMS detetor output
-float offset = 88;    // Microphone calibration
-float Awt = 0;
+uint8_t prescale = 20;  // Prescaler for RMS detector output
+float offset = 91;    // Microphone calibration
+float scaledRMS[9] = {0};
+float Awt[9] = {0};
 float AwtAccum = 0;
 float LAeq = 0;
 uint8_t n = 0; // number of measurements to average
-unsigned long sampletime = 500;  // Sampling interval
+unsigned long sampletime = 1000;  // Sampling interval
 unsigned long starttime;
+char str[5]; // Sound level to print to display
 
 void setup(){
+
   AudioMemory(20);
   Serial.begin(115200);
 
-  pink1.amplitude(0.01);
+  matrix.addLayer(&backgroundLayer);
+  matrix.addLayer(&indexedLayer);
 
-// Reverse for internal pink noise generator
-  mixer1.gain(0,1);
-  mixer1.gain(1,0);
+  matrix.begin();
+
+  pinMode(18, INPUT);
+  pinMode(19, INPUT);
+  CORE_PIN16_CONFIG = (PORT_PCR_MUX(2) | PORT_PCR_PE | PORT_PCR_PS);
+  CORE_PIN17_CONFIG = (PORT_PCR_MUX(2) | PORT_PCR_PE | PORT_PCR_PS);
+
+  matrix.setBrightness(defaultBrightness);
+  backgroundLayer.setBrightness(backgroundBrightness);
+
+// Pink noise generator for debug
+  pink1.amplitude(0.01);
+  mixer1.gain(0,1);  // microphone level
+  mixer1.gain(1,0);  // pink noise level
 
 
 // Setup filter center frequencies and Q (1 octave)
@@ -94,8 +132,8 @@ void setup(){
   filter8000.resonance(1.414);
 }
 
-void loop(){
 
+void loop(){
   n = 0;
   AwtAccum = 0;
   starttime = millis();  // Get initial time
@@ -116,44 +154,56 @@ void loop(){
             rms8000.available()
         ){
 
-// Output unweighted octave-band values (debug)
-        // Serial.print(20 * log10f(rms31.read())+offset);
-        // Serial.print(", ");
-        // Serial.print(20 * log10f(rms63.read())+offset);
-        // Serial.print(", ");
-        // Serial.print(20 * log10f(rms125.read())+offset);
-        // Serial.print(", ");
-        // Serial.print(20 * log10f(rms250.read())+offset);
-        // Serial.print(", ");
-        // Serial.print(20 * log10f(rms500.read())+offset);
-        // Serial.print(", ");
-        // Serial.print(20 * log10f(rms1000.read())+offset);
-        // Serial.print(", ");
-        // Serial.print(20 * log10f(rms2000.read())+offset);
-        // Serial.print(", ");
-        // Serial.print(20 * log10f(rms4000.read())+offset);
-        // Serial.print(", ");
-        // Serial.println(20 * log10f(rms8000.read())+offset);
+//  Read and scale RMS values
+        scaledRMS[0] = rms31.read()   * prescale;
+        scaledRMS[1] = rms63.read()   * prescale;
+        scaledRMS[2] = rms125.read()  * prescale;
+        scaledRMS[3] = rms250.read()  * prescale;
+        scaledRMS[4] = rms500.read()  * prescale;
+        scaledRMS[5] = rms1000.read() * prescale;
+        scaledRMS[6] = rms2000.read() * prescale;
+        scaledRMS[7] = rms4000.read() * prescale;
+        scaledRMS[8] = rms8000.read() * prescale;
 
-// Apply A-weighting and accumulate squared Vrms values from each band
-        Awt = 0;
-        Awt += sq(rms31.read()   * prescale * 0.01071519 );  //squared Vrms
-        Awt += sq(rms63.read()   * prescale * 0.04897788 );
-        Awt += sq(rms125.read()  * prescale * 0.15667510 );
-        Awt += sq(rms250.read()  * prescale * 0.37153523 );
-        Awt += sq(rms500.read()  * prescale * 0.69183097 );
-        Awt += sq(rms1000.read() * prescale              );
-        Awt += sq(rms2000.read() * prescale * 1.1481536  );
-        Awt += sq(rms4000.read() * prescale * 1.1220185  );
-        Awt += sq(rms8000.read() * prescale * 0.8810489  );
 
-// At this point, Awt is a sum of squared voltages.  Total voltage
-// would be sqrt of this value.
+// Apply A-weighting and square values from each band
+        Awt[0] = scaledRMS[0] * 0.01071519;  //squared Vrms
+        Awt[1] = scaledRMS[1] * 0.04897788;
+        Awt[2] = scaledRMS[2] * 0.15667510;
+        Awt[3] = scaledRMS[3] * 0.37153523;
+        Awt[4] = scaledRMS[4] * 0.69183097;
+        Awt[5] = scaledRMS[5]             ;
+        Awt[6] = scaledRMS[6] * 1.1481536 ;
+        Awt[7] = scaledRMS[7] * 1.1220185 ;
+        Awt[8] = scaledRMS[8] * 0.8810489 ;
 
-        AwtAccum += Awt;  // Accumulates sums of sqaured voltages from each loop
+// Accumulate sums of sqaured voltages from each loop
+        for (int i = 0; i < 9; i++){
+          AwtAccum += sq(Awt[i]);
+        }
         n++;  // Increment average counter for later averaging
+
+        int bar[9] = {0}; // Octave-band bargraph heights
+
+// Calculated SPL in each band and scale for display
+        for (int i = 0; i < 9; i++){
+          bar[i] = int((20 * log10f(scaledRMS[i]) + offset - 15)/5);
+        }
+
+        backgroundLayer.fillScreen(backgroundColor); // Set background
+
+// Draw rectangles for each band
+        for (int b = 0; b < 8; b++){
+          const int barSpacing = 4;
+          const int barWidth = 3;
+          int x0 = b * barSpacing;
+          int y0 = kMatrixHeight;
+          int x1 = b * barSpacing + barWidth - 1;
+          int y1 = kMatrixHeight - bar[b];
+          backgroundLayer.fillRectangle(x0, y0, x1, y1, barOutlineColor, barColor);
+        }
+        backgroundLayer.swapBuffers();
       }
-      delay(1);  // Won't loop without this for some reason
     }
 
 // Power is proportional to V^2.  AwtAccum is a sum of V^2 values.
@@ -162,5 +212,19 @@ void loop(){
 // offset = mic calibration
 
     LAeq = round(10 * log10f(AwtAccum / n) + offset);
-    Serial.println(LAeq,0);  // Report 0 decimal places
+    //Serial.println(LAeq,0);  // Report 0 decimal places
+
+    sprintf(str, "%d", int(LAeq));
+
+    indexedLayer.fillScreen(0);
+    indexedLayer.setIndexedColor(0, numberColor);
+    indexedLayer.setFont(font8x13);
+    if (LAeq < 100) {
+      indexedLayer.drawString(12, 1, 0, str);
+    } else {
+      indexedLayer.drawString(4, 1, 0, str);
+    }
+
+    indexedLayer.swapBuffers();
+    //Serial.println(AudioProcessorUsage());
 }
