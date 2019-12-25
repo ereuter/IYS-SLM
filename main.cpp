@@ -96,14 +96,8 @@ bool graph = false;
 
 IntervalTimer reportTimer;
 IntervalTimer graphTimer;
-
-void setReport(){
-  report = true;
-}
-
-void setGraph(){
-  graph = true;
-}
+void setReport() {report = true;} //  Called by IntervalTimer
+void setGraph() {graph = true;} //  Called by IntervalTimer
 
 void setup(){
 
@@ -123,16 +117,16 @@ void setup(){
   matrix.setBrightness(defaultBrightness);
   backgroundLayer.setBrightness(backgroundBrightness);
 
-  reportTimer.begin(setReport,1000000);
-  graphTimer.begin(setGraph, 100000);
+  reportTimer.begin((setReport),1000000);
+  graphTimer.begin(setGraph, 50000);
 
-// Pink noise generator for debug
+  // Pink noise generator for debug
   pink1.amplitude(0.01);
   mixer1.gain(0,1);  // microphone level
   mixer1.gain(1,0);  // pink noise level
 
 
-// Setup filter center frequencies and Q (1 octave)
+  // Setup filter center frequencies and Q (1 octave)
   filter31.frequency(31.5);
   filter31.resonance(1.414);
   filter63.frequency(63);
@@ -155,30 +149,27 @@ void setup(){
 
   scrollingLayer.setColor({0xff, 0xff, 0xff});
   scrollingLayer.setMode(wrapForward);
-  scrollingLayer.setSpeed(30);
+  scrollingLayer.setSpeed(60);
   scrollingLayer.setFont(font6x10);
   scrollingLayer.start("International Year of Sound", 1);
 }
 
 void loop(){
-
-
-    // Wait until data avaiable from all octave-band filters
-  if (
-          rms31.available() &&
-          rms63.available() &&
-          rms125.available() &&
-          rms250.available() &&
-          rms500.available() &&
-          rms1000.available() &&
-          rms2000.available() &&
-          rms4000.available() &&
-          rms8000.available()
-      ){
+  // Wait until data avaiable from all octave-band filters
+  if (rms31.available() &&
+      rms63.available() &&
+      rms125.available() &&
+      rms250.available() &&
+      rms500.available() &&
+      rms1000.available() &&
+      rms2000.available() &&
+      rms4000.available() &&
+      rms8000.available()){
 
     float scaledRMS[9] = {0};
     float Awt[9] = {0};
-//  Read and scale RMS values
+
+    //  Read and scale RMS values
     scaledRMS[0] = rms31.read()   * prescale;
     scaledRMS[1] = rms63.read()   * prescale;
     scaledRMS[2] = rms125.read()  * prescale;
@@ -189,101 +180,106 @@ void loop(){
     scaledRMS[7] = rms4000.read() * prescale;
     scaledRMS[8] = rms8000.read() * prescale;
 
-// Apply A-weighting and square values from each band
-    Awt[0] = scaledRMS[0] * 0.01071519;  //squared Vrms
+    // Apply A-weighting and square values from each band
+    Awt[0] = scaledRMS[0] * 0.01071519; // Values are 10^(L/20) where L = standard correction
     Awt[1] = scaledRMS[1] * 0.04897788;
     Awt[2] = scaledRMS[2] * 0.15667510;
     Awt[3] = scaledRMS[3] * 0.37153523;
     Awt[4] = scaledRMS[4] * 0.69183097;
-    Awt[5] = scaledRMS[5]             ;
+    Awt[5] = scaledRMS[5]             ; // No correction at 1 kHz
     Awt[6] = scaledRMS[6] * 1.1481536 ;
     Awt[7] = scaledRMS[7] * 1.1220185 ;
     Awt[8] = scaledRMS[8] * 0.8810489 ;
 
-// Accumulate sums of sqaured voltages from each loop
+    // Accumulate sums of sqaured voltages from each loop (A-weighted)
     for (int i = 0; i < 9; i++){
-      AwtAccum += sq(Awt[i]);
-      AwtTrace += sq(Awt[i]);
+      AwtAccum += sq(Awt[i]);  // Accumulator for A-wt numerical report (report interval)
+      AwtTrace += sq(Awt[i]);  // Accumulator for A-wt trace (graph interval)
     }
-    reportAvg++;  // Increment loop counter for later averaging
-
+    // Accumulate sums of squared voltages for each octave band (Z-weighted)
     for (int i = 0; i < 9; i++){
       ZwtAccum[i] += sq(scaledRMS[i]);
     }
+    // Increment loop counters for later averaging
+    reportAvg++;
     graphAvg++;
-    delay(10);
+    delay(10);  // Not clear why this is needed, but it is.
   }
 
 
 // Graphing interval timer sets "graph"
 if(graph){
-
-// Draw graphic level record
+    // Draw trace
     backgroundLayer.fillScreen(backgroundColor); // Set background
-    for (int i = 0; i < 32; i++){
+    for (int i = 0; i < 32; i++){  //  Shift values left
       trace[i] = trace[i+1];
     }
-    trace[31] = int((10 * log10f(AwtTrace / graphAvg) + offset)/5)-2;
-    for (int i = 0; i < 32; i++){
-      backgroundLayer.drawPixel(i, kMatrixHeight - trace[i], {0xFF, 0xCC, 0xFF});
+
+    trace[31] = int((10 * log10f(AwtTrace / graphAvg) + offset)/15)+8;  // Calculate new value
+    for (int i = 0; i < 32; i++){  // Draw new trace
+      //backgroundLayer.drawLine(i, kMatrixHeight, i, kMatrixHeight - trace[i], {0x66,0x00,0x10});
+      backgroundLayer.drawPixel(i, kMatrixHeight - trace[i], {0xff, 0xff, 0xff});
     }
 
-// Calculate SPL in each band and scale for bargraph display
+    // Calculate SPL in each band and scale for bargraph display
     int bar[9] = {0}; // Octave-band bargraph heights
     for (int i = 0; i < 9; i++){
       bar[i] = int((10 * log10f(ZwtAccum[i]/graphAvg) + offset - 15)/5);
     }
-// Draw rectangles for each band
 
+    // Draw rectangles for each band (31.5 Hz to 4 kHz)
     for (int b = 0; b < 8; b++){
       const int barSpacing = 4;
       const int barWidth = 3;
+      // Define corners of rectangle for each bar
       int x0 = b * barSpacing;
       int y0 = kMatrixHeight;
       int x1 = b * barSpacing + barWidth - 1;
       int y1 = kMatrixHeight - bar[b];
       backgroundLayer.fillRectangle(x0, y0, x1, y1, barOutlineColor, barColor);
     }
-    backgroundLayer.swapBuffers();
-    graphAvg = 0;
-    for (int i = 0; i < 9; i++){
+
+    backgroundLayer.swapBuffers();  // Update background layer
+
+    graphAvg = 0; // Reset number of averages
+    for (int i = 0; i < 9; i++){  // Zero out octave band accumulator
       ZwtAccum[i] = 0;
     }
-    AwtTrace = 0;
-    graph = false;
+    AwtTrace = 0;  // Clear A-wt trace accumulator
+    graph = false;  // Clear flag
   }
 
-
-// Sampling interval timer sets "report"
+  // Sampling interval timer sets "report"
   if(report){
-// Power is proportional to V^2.  AwtAccum is a sum of V^2 values.
-// Average power is sigma(P)/n, equivalent to sigma(V^2)/n.
-// 10Log(sigma(V^2)/n) = average SPL
-// offset = mic calibration
+    // Power is proportional to V^2.  AwtAccum is a sum of V^2 values.
+    // Average power is sigma(P)/n, equivalent to sigma(V^2)/n.
+    // 10Log(sigma(V^2)/n) = average SPL
+    // offset = mic calibration
     float LAeq = (round(10 * log10f(AwtAccum / reportAvg) + offset));
     Serial.println(LAeq,0);  // Report 0 decimal places
 
-    char str[5];
-    sprintf(str, "%d", int(LAeq));
-
-    indexedLayer.fillScreen(0);
+    indexedLayer.fillScreen(0);  // Clear indexed layer
     indexedLayer.setFont(font8x13);
 
+    // Set color according to thresholds
     rgb24 numberColor = numberGreen;
     if (LAeq >= yellow) {numberColor = numberYellow;}
     if (LAeq >= red) {numberColor = numberRed;}
     indexedLayer.setIndexedColor(0, numberColor);
 
+    // Right justify and print to display
+    char str[5];
+    sprintf(str, "%d", int(LAeq));
     if (LAeq < 100) {
       indexedLayer.drawString(12, 1, 0, str);
     } else {
       indexedLayer.drawString(4, 1, 0, str);
     }
 
-    indexedLayer.swapBuffers();
-    //Serial.println(reportAvg);
-    reportAvg = 0;
-    AwtAccum = 0;
-    report = false;
+    indexedLayer.swapBuffers();  // Refresh screen
+
+    reportAvg = 0;  // Reset number of averages
+    AwtAccum = 0;   // Zero accumulator
+    report = false;  // Clear flag
   }
 }
