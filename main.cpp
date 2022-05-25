@@ -25,17 +25,23 @@ SMARTMATRIX_ALLOCATE_INDEXED_LAYER(indexedLayer, kMatrixWidth, kMatrixHeight, CO
 SMARTMATRIX_ALLOCATE_BACKGROUND_LAYER(backgroundLayer, kMatrixWidth, kMatrixHeight, COLOR_DEPTH, kBackgroundLayerOptions);
 SMARTMATRIX_ALLOCATE_SCROLLING_LAYER(scrollingLayer, kMatrixWidth, kMatrixHeight, COLOR_DEPTH, kScrollingLayerOptions);
 
-const int defaultBrightness = 128;
-const int backgroundBrightness = defaultBrightness/10;
+// Set brightness (8-bit) for bright & dim levels
+const int highForeground = 255;
+const int highBackground = highForeground/8;
+const int lowForeground = 50;
+const int lowBackground = lowForeground/4;
 
-const rgb24 backgroundColor = {0x33,0x00,0x55};
+// Set colors (RGB)
+const rgb24 backgroundColor = {0x33,0x00,0x20};
 const rgb24 barColor = {0x33, 0x99, 0xff};
 const rgb24 barOutlineColor = {0x33, 0x99, 0xff};
 const rgb24 numberGreen = {0x66, 0xFF, 0x66};
 const rgb24 numberYellow = {0xFF,0xFF,0x66};
 const rgb24 numberRed = {0xff, 0 ,0};
+const rgb24 traceLine = {0xFF, 0x80, 0x00};
+const rgb24 traceFill = {0x66,0x00,0x33};
 
-
+// Code below pasted from Teensy Audio Library web tool
 // GUItool: begin automatically generated code
 AudioSynthNoisePink      pink1;          //xy=117,268
 AudioInputI2S            i2s1;           //xy=118,193
@@ -81,9 +87,9 @@ AudioConnection          patchCord20(filter8000, 1, rms8000, 0);
 // GUItool: end automatically generated code
 
 const uint8_t prescale = 20;  // Prescaler for RMS detector output
-const float offset = 91;    // Microphone calibration
-const uint8_t yellow = 85;
-const uint8_t red = 93;
+const float offset = 92.0;    // Microphone calibration
+const uint8_t yellow = 85;  // A-weight level at which number turns yellow
+const uint8_t red = 93;  // A-weight level at which number turns red
 
 float AwtAccum = 0;
 float AwtTrace = 0;
@@ -114,11 +120,11 @@ void setup(){
   CORE_PIN16_CONFIG = (PORT_PCR_MUX(2) | PORT_PCR_PE | PORT_PCR_PS);
   CORE_PIN17_CONFIG = (PORT_PCR_MUX(2) | PORT_PCR_PE | PORT_PCR_PS);
 
-  matrix.setBrightness(defaultBrightness);
-  backgroundLayer.setBrightness(backgroundBrightness);
+  pinMode(16, INPUT_PULLUP); // Pin for dimmer switch
 
-  reportTimer.begin((setReport),1000000);
-  graphTimer.begin(setGraph, 50000);
+  // Timers for graphing and reporting numerical level
+  reportTimer.begin((setReport),1000000); // 1 sec
+  graphTimer.begin(setGraph, 50000); // 50 ms
 
   // Pink noise generator for debug
   pink1.amplitude(0.01);
@@ -145,16 +151,18 @@ void setup(){
   filter4000.resonance(1.414);
   filter8000.frequency(8000);
   filter8000.resonance(1.414);
-
-
-  scrollingLayer.setColor({0xff, 0xff, 0xff});
-  scrollingLayer.setMode(wrapForward);
-  scrollingLayer.setSpeed(60);
-  scrollingLayer.setFont(font6x10);
-  scrollingLayer.start("International Year of Sound", 1);
 }
 
 void loop(){
+
+  // Dimmer switch on pin 16
+  if (digitalRead(16)){
+    matrix.setBrightness(lowForeground);
+    backgroundLayer.setBrightness(lowBackground);
+  } else {
+    matrix.setBrightness(highForeground);
+    backgroundLayer.setBrightness(highBackground);
+  }
   // Wait until data avaiable from all octave-band filters
   if (rms31.available() &&
       rms63.available() &&
@@ -215,16 +223,16 @@ if(graph){
       trace[i] = trace[i+1];
     }
 
-    trace[31] = int((10 * log10f(AwtTrace / graphAvg) + offset)/15)+8;  // Calculate new value
+    trace[31] = int((10 * log10f(AwtTrace / graphAvg) + offset)/10)+2;  // Calculate new value
     for (int i = 0; i < 32; i++){  // Draw new trace
-      //backgroundLayer.drawLine(i, kMatrixHeight, i, kMatrixHeight - trace[i], {0x66,0x00,0x10});
-      backgroundLayer.drawPixel(i, kMatrixHeight - trace[i], {0xff, 0xff, 0xff});
+      backgroundLayer.drawLine(i, kMatrixHeight, i, kMatrixHeight - trace[i], traceFill);
+      backgroundLayer.drawPixel(i, kMatrixHeight - trace[i], traceLine);
     }
 
     // Calculate SPL in each band and scale for bargraph display
     int bar[9] = {0}; // Octave-band bargraph heights
     for (int i = 0; i < 9; i++){
-      bar[i] = int((10 * log10f(ZwtAccum[i]/graphAvg) + offset - 15)/5);
+      bar[i] = int((10 * log10f(ZwtAccum[i]/graphAvg) + offset - 15)/5)-3;
     }
 
     // Draw rectangles for each band (31.5 Hz to 4 kHz)
